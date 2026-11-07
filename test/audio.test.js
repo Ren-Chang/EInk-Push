@@ -1,7 +1,7 @@
 // 音频编解码测试：与 Rust SDK src/audio.rs 的 #[cfg(test)] 用例对齐。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { OpusCodec, RecordingAssembler, MAX_SAMPLES, FRAME_SAMPLES } from '../src/audio.js';
+import { OpusCodec, RecordingAssembler, FRAME_SAMPLES, U32_MAX, checkLength } from '../src/audio.js';
 import { ZectrixError } from '../src/packet.js';
 
 const codec = new OpusCodec();
@@ -51,11 +51,52 @@ test('零帧录音不生成音频（与 Rust zero_frame_has_no_audio 一致）',
   assert.equal(audio, null);
 });
 
-test('超过 120 秒被拒绝（与 Rust oversized_audio_is_rejected 一致）', () => {
+test('扩展音频：181 秒（超过旧 120 秒上限）现在通过编码', () => {
+  // SDK 0.2.0 去掉 120 秒硬上限，不再以时长拒绝播放片段
+  assert.doesNotThrow(() => codec.encode(new Int16Array(16000 * 181 + 123)));
+});
+
+test('checkLength：u32 帧数上限校验（SDK 0.2.0）', () => {
+  assert.doesNotThrow(() => checkLength(16000 * 181 + 123)); // 181s 没问题
+  assert.doesNotThrow(() => checkLength(U32_MAX * FRAME_SAMPLES)); // 恰好 u32 帧：允许
   assert.throws(
-    () => codec.encode(new Int16Array(MAX_SAMPLES + 1)),
+    () => checkLength(U32_MAX * FRAME_SAMPLES + 1),
     (e) => e instanceof ZectrixError && e.kind === 'AudioTooLong',
   );
+});
+
+test('三分钟录音（>2000 帧）完整重组（SDK 0.2.0 扩展音频）', () => {
+  const samples = 16000 * 181 + 123;
+  const frames = codec.encode(new Int16Array(samples).fill(300));
+  assert.ok(frames.length > 2000, '应超过旧 2000 帧上限');
+  const rec = new RecordingAssembler(7, codec);
+  for (let i = 0; i < frames.length; i++) rec.push(i, frames[i]);
+  rec.ending(frames.length, ((samples - 1) % FRAME_SAMPLES) + 1, 'Completed');
+  assert.ok(rec.complete);
+  const { audio, reason } = rec.finish('Failed');
+  assert.equal(reason, 'Completed');
+  assert.equal(audio.length, samples);
+});
+
+test('push 接受 6 帧窗口内的帧、丢弃 U32_MAX 帧（旧 2000 上限已取消）', () => {
+  const rec = new RecordingAssembler(3, codec);
+  const frame = codec.encode(new Int16Array(FRAME_SAMPLES).fill(100))[0];
+  rec.push(0, frame); // 收一帧后 next=1
+  assert.equal(rec.push(5, frame), true, '6 帧窗口内（5-1=4<6）应接受');
+  assert.equal(rec.push(0xffffffff, frame), false, 'U32_MAX 帧没有可表示的结束号，应丢弃');
+});
+
+test('伪造 END 不能在收尾窗口外合成无限 PLC（SDK 0.2.0 防护）', () => {
+  const rec = new RecordingAssembler(4, codec);
+  const frame = codec.encode(new Int16Array(FRAME_SAMPLES).fill(100))[0];
+  rec.push(0, frame); // 收一帧后 next=1
+  // total=2000 与 next=1 相差远超 6 帧窗口，应被拒绝
+  assert.throws(
+    () => rec.ending(2000, 960, 'Completed'),
+    (e) => e instanceof ZectrixError && e.kind === 'InvalidAudio',
+  );
+  // 合法收尾：total 在 6 帧窗口内
+  assert.doesNotThrow(() => rec.ending(2, 960, 'Completed'));
 });
 
 test('Opus 编解码往返：960 样本帧长守恒', () => {

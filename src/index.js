@@ -112,6 +112,7 @@ const app = createServer({
   clientName,
   recordingsDir: recordingsDir ? path.resolve(recordingsDir) : undefined,
   recordingsKeep,
+  connectionListener: true, // 设备主动连接（SDK 0.2.0 invitation）：监听 UDP 32343
 });
 const server = app.listen(web, '0.0.0.0', async () => {
   console.log(`EInkPush Web 推送服务已启动: http://0.0.0.0:${web}`);

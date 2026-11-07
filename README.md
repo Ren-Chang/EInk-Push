@@ -275,21 +275,25 @@ node scripts/build-life-guide.mjs <HowToLiveBetter>/book
 
 ## 与 [Rust SDK](https://github.com/itopinion/zectrix-local-push-sdk) 的对应关系
 
+> 当前对齐 SDK **0.2.0**（对应 NOTE4 firmware 3.7.5）。`image.rs` / `discovery.rs` 在 0.1.0→0.2.0 之间逐字节未变，其余模块已同步。
+
 | 本仓库 | Rust SDK | 说明 |
 | --- | --- | --- |
-| `src/packet.js` | `src/protocol.rs` | 报文编解码、结果码、响应解析 |
+| `src/packet.js` | `src/protocol.rs` | 报文编解码、结果码、响应解析；0.2.0 新增 `CONNECT_REQUEST=17` |
 | `src/image.js` | `src/image.rs` | 线性亮度、色板量化、按位深选择的抖色（仅 MONO 扩散）、位打包、zlib |
-| `src/audio.js` | `src/audio.rs` | Opus 分帧、录音重组与补偿 |
-| `src/client.js` | `src/device.rs` + `src/discovery.rs` | 握手、保活、重传、推送/播放状态机、事件 |
+| `src/audio.js` | `src/audio.rs` | Opus 分帧、录音重组与补偿；扩展音频（0.2.0：u32 帧计数，取消 120s/2000 帧上限） |
+| `src/client.js` | `src/device.rs` + `src/discovery.rs` + `src/invitation.rs` | 握手、保活、重传、推送/播放状态机、事件；设备主动连接监听（0.2.0 invitation） |
 
 已知的**有意差异**（均为提升可靠性或画质，协议线格式不变）：
 
 - PING 用独立递增序号（与 Rust `Wire::ping` 一致），单次期限 4.5s、不重叠发送
 - 播放结果在 RESULT 丢失时会回查 STATE（`object=2`），不直接判 `ResultUnknown`
 - 播放调度滞后 >360ms 时先发 `AUDIO_STOP` 再报错
+- **扩展音频（对齐 SDK 0.2.0 audio.rs）**：取消单段 120 秒 / 2000 帧硬上限，帧计数扩到 u32::MAX（AUDIO_END 携带 u32 帧数）；`encode` 与录音重组只在帧数超 u32 计数范围时拒绝，并新增伪造 END 防护（`ending` 用 `total - next > 6` 拦截，避免在收尾窗口外凭空合成无限 PLC）；录音看门狗去掉 125s 超长硬上限，只保留 3s 无进展超时
+- **设备主动连接（SDK 0.2.0 invitation）**：新增 `ConnectionRequestListener`（监听 UDP 32343）与 `open_requested` 反向建链，设备可主动请求管理端接管管理权；原有的“管理端主动发现”路径保留，两者并存。监听**默认关闭**，需在 `createServer` 配置里显式 `connectionListener: true` 才开启（避免并行测试/多实例抢占固定端口 32343）；端口被占用仅告警，不影响现有管理端主动发现路径
 - 录音在收到 `AUDIO_END` 后**等待乱序帧**（至多 3s 无进展），而不是 180ms 就补静音；补静音的帧数通过 `lostFrames` 上报
 - **设备上报包只对 KEY 按序号去重**：`AUDIO_END` 的 sequence 是末帧号，两段帧数相同的录音会重复，若按 `(kind, seq)` 去重会丢掉后一段的 END；其余上报本身幂等（RESULT 覆盖同一键、CLOSE 走终态、AUDIO_BEGIN 有存在性守卫）
-- 图片上传与播放各自串行化（避免多任务分片/帧交错）；没有 `AUDIO_END` 的录音只补到“已收到的最高帧”，不会补满 2000 帧静音
+- 图片上传与播放各自串行化（避免多任务分片/帧交错）；没有 `AUDIO_END` 的录音只补到“已收到的最高帧”，不会补满 u32 帧静音
 - **误差扩散只在 MONO（1bpp）开启**（Rust 对 1/2/4bpp 一律做 FS 扩散）：设备侧只按灰阶号直查色板显示、不再抖色，扩散图案会以双色斑点原样出现在屏幕上。GRAY16 的量化误差最大只有半个色阶，扩散收益趋近于零；GRAY4 误差虽有 42.5（线性域），但 400×300 小屏上人眼的空间平均抵不过斑点感——共同代价是把平滑的抗锯齿灰边和 1px 细线打成交替斑点：细线变虚线、灰字发脏、图表边缘带噪点（放大实测确认）。MONO 必须靠扩散表达中间调，与 Rust 逐位一致；`packDithered(pixels, bpp, colors, { diffuse: true })` 可强制任意位深按 Rust 语义扩散
 - 渲染出口多一步 USM 锐化（`exportPng`，默认 0.7，`sharpen: false` 关闭、`sharpenAmount` 覆盖）：超采样降采样得到的抗锯齿边在 400×300 屏上直接量化偏“肉”，USM 把笔画核推向更深的灰阶、贴边背景推向纯白，量化后更干脆（实测梯度能量 +20.6%、强边缘中间灰 -24pp；0.35 档仅 +11.9%，1.0 档边际收益快速衰减且白边风险失去控制）
 

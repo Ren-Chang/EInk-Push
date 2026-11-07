@@ -25,6 +25,7 @@ async function boot(options = {}) {
     recordingsDir: dir,
     settingsFile: path.join(dir, 'config.json'),
     auth: false, // 鉴权由 auth.test.js 单独覆盖，其余用例专注协议与接口
+    connectionListener: false, // 单测不占用 UDP 32343，设备主动连接由 audio/client 单测覆盖
     ...options,
   });
   const server = app.listen(0);
@@ -229,7 +230,7 @@ test('录音文件按保留上限淘汰最旧的一份', { timeout: 20000 }, asy
   const device = new MockDevice({ dropChunkOnce: false });
   const port = await device.start();
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'zectrix-keep-'));
-  const app = createServer({ device: `127.0.0.1:${port}`, recordingsDir: dir, recordingsKeep: 1, auth: false });
+  const app = createServer({ device: `127.0.0.1:${port}`, recordingsDir: dir, recordingsKeep: 1, auth: false, connectionListener: false });
   const server = app.listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -261,7 +262,7 @@ test('未配置设备时：页面可用、推送返回 409 而不是 500', { tim
   const device = new MockDevice({ dropChunkOnce: false });
   const port = await device.start();
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'zectrix-cfg-'));
-  const app = createServer({ device: null, recordingsDir: dir, settingsFile: path.join(dir, 'config.json'), auth: false });
+  const app = createServer({ device: null, recordingsDir: dir, settingsFile: path.join(dir, 'config.json'), auth: false, connectionListener: false });
   const server = app.listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -293,7 +294,7 @@ test('未配置设备时：页面可用、推送返回 409 而不是 500', { tim
 test('页面保存的设备地址会落盘，重启后仍然生效', { timeout: 20000 }, async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'zectrix-cfg-'));
   const settingsFile = path.join(dir, 'config.json');
-  const app = createServer({ device: null, recordingsDir: dir, settingsFile, auth: false });
+  const app = createServer({ device: null, recordingsDir: dir, settingsFile, auth: false, connectionListener: false });
   const server = app.listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;

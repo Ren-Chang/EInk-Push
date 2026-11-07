@@ -6,7 +6,7 @@
 //           IMAGE_STATUS 轮询 64 位接收位图、只补缺块 → RESULT/STATE 确认显示完成
 //   - 控制命令：1500ms 起步、指数退避至 4s、总期限 15s；同序号有限重传
 //   - 结果未知：ResultUnknown 不得由本层自动重推，交由业务决定
-//   - 录音：设备上行帧重组；3s 无进展 / 125s 超长 / 连接结束都会强制收尾
+//   - 录音：设备上行帧重组；3s 无进展 / 连接结束强制收尾（SDK 0.2.0 去掉 125s 超长硬上限）
 // 连接对象支持 close() 后再次 open()（会完整复位会话状态）。
 
 import dgram from 'node:dgram';
@@ -41,7 +41,7 @@ const IMAGE = {
   refreshDeadline: 60000,
 };
 const AUDIO = { resultDeadline: 15000, pollInterval: 500, scheduleTolerance: 360 };
-const RECORDING = { progressTimeout: 3000, totalTimeout: 125000, endGrace: 360, tickInterval: 100 };
+const RECORDING = { progressTimeout: 3000, endGrace: 360, tickInterval: 100 };
 
 export class ZectrixClient extends EventEmitter {
   /**
@@ -96,66 +96,111 @@ export class ZectrixClient extends EventEmitter {
   // ---------- 连接生命周期 ----------
 
   async open() {
+    await this._createSocket();
+    try {
+      await this._finishOpen(null);
+      return this;
+    } catch (err) {
+      this._abortOpen(err);
+      throw err;
+    }
+  }
+
+  /**
+   * 建链前置：解析设备地址、创建并绑定 UDP 套接字、挂接收循环。
+   * open() 与 open_requested() 共用，保证 close() 之后可复用本实例重新打开。
+   */
+  async _createSocket() {
     if (this.socket) throw new ZectrixError('Busy', '连接已打开');
     if (this.opening) throw new ZectrixError('Busy', '连接正在建立中');
     this._initSessionState();
-    try {
-      this.peerIp = await resolvePeer(this.host);
-      this.socket = dgram.createSocket('udp4');
-      await new Promise((resolve, reject) => {
-        const onError = (err) => reject(err);
-        this.socket.once('error', onError);
-        this.socket.once('listening', () => {
-          this.socket?.removeListener('error', onError);
-          resolve();
-        });
-        this.socket.bind(0);
+    this.peerIp = await resolvePeer(this.host);
+    this.socket = dgram.createSocket('udp4');
+    await new Promise((resolve, reject) => {
+      const onError = (err) => reject(err);
+      this.socket.once('error', onError);
+      this.socket.once('listening', () => {
+        this.socket?.removeListener('error', onError);
+        resolve();
       });
-      // 未连接 socket：所有发送显式带目标地址，接收侧按 rinfo 过滤
-      this.socket.on('message', (data, rinfo) => this._onMessage(data, rinfo));
-      this.socket.on('error', (err) => this.emit('socketError', err));
-      this.opening = true;
-      // 接收循环不挂 catch 的话，一次意外抛错会变成 unhandledRejection 直接杀进程；
-      // 这里降级为 socketError，连接由 15s 保活超时兜底收尾
-      this.recvLoop = this._receiveLoop().catch((err) => this.emit('socketError', err));
+      this.socket.bind(0);
+    });
+    // 未连接 socket：所有发送显式带目标地址，接收侧按 rinfo 过滤
+    this.socket.on('message', (data, rinfo) => this._onMessage(data, rinfo));
+    this.socket.on('error', (err) => this.emit('socketError', err));
+    this.opening = true;
+    // 接收循环不挂 catch 的话，一次意外抛错会变成 unhandledRejection 直接杀进程；
+    // 这里降级为 socketError，连接由 15s 保活超时兜底收尾
+    this.recvLoop = this._receiveLoop().catch((err) => this.emit('socketError', err));
+  }
 
-      // 1) INFO：connection=0, seq=1；响应头带设备当前连接编号
-      const infoResp = await this._exchange(encodePacket(T.INFO, 0, 1), T.INFO, OPEN.infoTimeout, 1);
-      const info = parseInfo(infoResp, `${this.host}:${this.port}`);
-      this.connection = infoResp.connection;
-      this.summary = info;
-      if (info.busy) throw new ZectrixError('Busy', '设备正被其他连接方管理');
+  /**
+   * 握手收尾（INFO → CONNECT → PALETTE → 起定时器），open() 与 open_requested() 共用。
+   * @param {bigint|number|string|null} expectedConnectionId
+   *   设备主动连接时由 CONNECT_REQUEST 预先给出、需回校验；管理端主动发现时为 null（以 INFO 响应为准）
+   */
+  async _finishOpen(expectedConnectionId = null) {
+    // 1) INFO：connection=0, seq=1；响应头带设备当前连接编号
+    const infoResp = await this._exchange(encodePacket(T.INFO, 0, 1), T.INFO, OPEN.infoTimeout, 1);
+    const info = parseInfo(infoResp, `${this.host}:${this.port}`);
+    // 设备主动连接：连接号是设备预先给出的，必须回校验，避免连上已易主的设备
+    if (expectedConnectionId !== null && infoResp.connection !== BigInt(expectedConnectionId)) {
+      throw new ZectrixError('Disconnected', '设备连接号不匹配');
+    }
+    this.connection = infoResp.connection;
+    this.summary = info;
+    if (info.busy) throw new ZectrixError('Busy', '设备正被其他连接方管理');
 
-      // 2) CONNECT：绑定本机，取得管理权
-      const nameBuf = Buffer.from(this.clientName, 'utf8');
-      const connectResp = await this._exchange(
-        encodePacket(T.CONNECT, this.connection, 1, Buffer.concat([Buffer.from([nameBuf.length]), nameBuf])),
-        T.CONNECT,
-        OPEN.connectTimeout,
+    // 2) CONNECT：绑定本机，取得管理权
+    const nameBuf = Buffer.from(this.clientName, 'utf8');
+    const connectResp = await this._exchange(
+      encodePacket(T.CONNECT, this.connection, 1, Buffer.concat([Buffer.from([nameBuf.length]), nameBuf])),
+      T.CONNECT,
+      OPEN.connectTimeout,
+      1,
+    );
+    checkCode(connectResp.body);
+
+    // 3) PALETTE：读取设备色板，失败即释放管理权
+    try {
+      const paletteResp = await this._exchange(
+        encodePacket(T.PALETTE, this.connection, 1),
+        T.PALETTE,
+        OPEN.paletteTimeout,
         1,
       );
-      checkCode(connectResp.body);
+      this.palette = parsePalette(paletteResp.body);
+    } catch (err) {
+      await this._sendClose(END.NORMAL).catch(() => {});
+      throw err;
+    }
 
-      // 3) PALETTE：读取设备色板，失败即释放管理权
-      try {
-        const paletteResp = await this._exchange(
-          encodePacket(T.PALETTE, this.connection, 1),
-          T.PALETTE,
-          OPEN.paletteTimeout,
-          1,
-        );
-        this.palette = parsePalette(paletteResp.body);
-      } catch (err) {
-        await this._sendClose(END.NORMAL).catch(() => {});
-        throw err;
+    this.closed = false;
+    this.opening = false;
+    this.lastPingAt = Date.now();
+    this.heartbeatTimer = setInterval(() => this._heartbeat(), KEEPALIVE.interval);
+    this.recordTimer = setInterval(() => this._tickRecording(), RECORDING.tickInterval);
+    this.emit('open', this.summary);
+    return this;
+  }
+
+  /**
+   * 设备主动发起连接的反向建链（SDK 0.2.0 invitation）。
+   * 设备先把 CONNECT_REQUEST 发到管理端固定端口 32343，管理端据此得到地址与连接号，再回连设备完成握手。
+   * 与 open() 的区别：连接号不是“发现”的，而是设备预先给出、由 INFO 响应回校验，避免连上已易主的设备。
+   * @param {bigint|number|string} connectionId CONNECT_REQUEST 携带的连接号
+   * @param {string} [clientName] 管理端名称（1~48 字节、无控制字符；省略则用构造时名称）
+   */
+  async open_requested(connectionId, clientName) {
+    if (clientName !== undefined) {
+      if (!clientName || clientName.length > 48 || /[\u0000-\u001f\u007f]/.test(clientName)) {
+        throw new ZectrixError('InvalidOptions', '管理端名称应为 1～48 字节且不含控制字符');
       }
-
-      this.closed = false;
-      this.opening = false;
-      this.lastPingAt = Date.now();
-      this.heartbeatTimer = setInterval(() => this._heartbeat(), KEEPALIVE.interval);
-      this.recordTimer = setInterval(() => this._tickRecording(), RECORDING.tickInterval);
-      this.emit('open', this.summary);
+      this.clientName = clientName.slice(0, 48);
+    }
+    await this._createSocket();
+    try {
+      await this._finishOpen(connectionId);
       return this;
     } catch (err) {
       this._abortOpen(err);
@@ -755,7 +800,7 @@ export class ZectrixClient extends EventEmitter {
     }
   }
 
-  /** 录音看门狗：收齐即收尾；无进展 3s / 总长 125s 判失败（对齐 Rust receive tick） */
+  /** 录音看门狗：收齐即收尾；无进展 3s 判失败（SDK 0.2.0 去掉 125s 超长硬上限，只保留无进展超时） */
   _tickRecording() {
     if (!this.recordings.size) return;
     for (const rec of [...this.recordings.values()]) {
@@ -767,10 +812,7 @@ export class ZectrixClient extends EventEmitter {
           rec.drain(force);
           if (rec.complete) { this._finalizeRecording(rec.id); continue; }
           if (age >= RECORDING.progressTimeout) this._finalizeRecording(rec.id, 'Failed');
-        } else if (
-          Date.now() - rec.progressAt >= RECORDING.progressTimeout ||
-          Date.now() - rec.startedAt >= RECORDING.totalTimeout
-        ) {
+        } else if (Date.now() - rec.progressAt >= RECORDING.progressTimeout) {
           this._finalizeRecording(rec.id, 'Failed');
         }
       } catch {
@@ -835,6 +877,101 @@ function recordingReason(n) {
   if (n === END.NORMAL) return 'Completed';
   if (n === END.LIMIT) return 'Limit';
   return 'Failed';
+}
+
+/**
+ * 设备主动发起连接的监听（SDK 0.2.0 invitation::ConnectionRequestListener）。
+ * 监听固定的 UDP 32343 端口，等设备的 CONNECT_REQUEST（协议包 17）。
+ * 不做事先发现/配对/自动重连——收到有效且未见过的请求才返回，忙碌时由调用方自行丢弃。
+ */
+export class ConnectionRequestListener {
+  static get PORT() { return 32343; }
+
+  constructor() {
+    this.socket = null;
+    this.seen = []; // { address, connection, at } 最近 60s 去重窗口内的请求
+    this.requests = []; // 已通过校验+去重、等待被 nextRequest 取走的请求
+    this.waiters = []; // 正在等待请求的 nextRequest 调用
+  }
+
+  /** 绑定 IPv4 UDP 32343；端口冲突由调用方捕获处理 */
+  async bind() {
+    this.socket = dgram.createSocket('udp4');
+    // 监听套接字的错误不应变成未处理异常：仅记录，循环继续等下一包
+    this.socket.on('error', (err) => console.log(`连接请求监听套接字错误: ${err?.message || err}`));
+    // 常驻接收：bind 起就接管所有报文，先到的即使还没人 await 也不会丢（EventEmitter 无监听会丢事件）。
+    // 解码与去重都在这里完成，只有“有效且 60s 内未见”的请求才入队，避免把非法包/重复包暴露给消费方；
+    // 这样 nextRequest() 始终是单一消费者，不会被并发调用互相抢包。
+    this.socket.on('message', (msg, from) => this._onMessage(msg, from));
+    await new Promise((resolve, reject) => {
+      const onError = (err) => reject(err);
+      this.socket.once('error', onError);
+      this.socket.once('listening', () => {
+        this.socket.removeListener('error', onError);
+        resolve();
+      });
+      this.socket.bind(ConnectionRequestListener.PORT);
+    });
+    return this;
+  }
+
+  /** 报文入口：解码、过滤非法包、60s 内去重；仅合法新请求入队供 nextRequest 取用 */
+  _onMessage(msg, from) {
+    if (!this.socket) return;
+    let p = null;
+    try { p = decodePacket(msg); } catch { return; } // 截断/非法头，忽略
+    if (
+      !p || p.kind !== T.CONNECT_REQUEST ||
+      p.connection === 0n || p.sequence !== 1 || p.body.length !== 0
+    ) {
+      return;
+    }
+    const now = Date.now();
+    this.seen = this.seen.filter((s) => now - s.at < 60000);
+    if (this.seen.some((s) => s.address === from.address && s.connection === p.connection)) return;
+    if (this.seen.length >= 256) this.seen.shift();
+    this.seen.push({ address: from.address, connection: p.connection, at: now });
+    const req = new ConnectionRequest(`${from.address}:${from.port}`, p.connection, now);
+    const waiter = this.waiters.shift();
+    if (waiter) waiter(req);
+    else this.requests.push(req);
+  }
+
+  /** 取一个有效且 60s 内未见过的请求；无则阻塞直到下一个（监听器已关闭时返回 null） */
+  async nextRequest() {
+    if (!this.socket) throw new ZectrixError('NotConfigured', '监听器尚未绑定');
+    if (this.requests.length) return this.requests.shift();
+    return new Promise((resolve) => this.waiters.push(resolve));
+  }
+
+  /** 关闭监听端口（进程退出或不需要时调用） */
+  close() {
+    if (this.socket) {
+      try { this.socket.close(); } catch { /* 已关闭 */ }
+      this.socket = null;
+    }
+    // 唤醒挂起的 nextRequest，避免关闭后挂死事件循环
+    for (const waiter of this.waiters.splice(0)) waiter(null);
+    this.requests.length = 0;
+  }
+}
+
+/** 一个明确的设备连接请求；消费它不会覆盖更新的连接号（SDK ConnectionRequest） */
+export class ConnectionRequest {
+  constructor(address, connectionId, received) {
+    this.address = address;
+    this.connectionId = connectionId;
+    this.received = received;
+  }
+
+  /** 用本请求的连接号回连设备；超过 10s 视为失效 */
+  async accept(clientName) {
+    if (Date.now() - this.received >= 10000) {
+      throw new ZectrixError('Disconnected', '连接请求已过期（>10s）');
+    }
+    const client = new ZectrixClient(this.address, { clientName });
+    return client.open_requested(this.connectionId, clientName);
+  }
 }
 
 export { FORMAT };

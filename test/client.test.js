@@ -1,11 +1,12 @@
 // 客户端集成测试：MockDevice 实现协议另一端，验证完整业务流程。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import dgram from 'node:dgram';
 import sharp from 'sharp';
 import { MockDevice } from './mock-device.js';
-import { ZectrixClient } from '../src/client.js';
+import { ZectrixClient, ConnectionRequestListener } from '../src/client.js';
 import { FORMAT } from '../src/image.js';
-import { KEY, ACTION, END } from '../src/packet.js';
+import { KEY, ACTION, END, T, encodePacket } from '../src/packet.js';
 import { OpusCodec } from '../src/audio.js';
 
 async function testPng() {
@@ -145,4 +146,96 @@ test('设备主动 CLOSE：客户端进入终态并交付 disconnected', { timeo
   assert.equal(event.reason, 'DeviceExit');
   assert.equal(client.closed, true);
   device.stop();
+});
+
+test('open_requested：按设备给定连接号回连并校验', { timeout: 20000 }, async () => {
+  const device = new MockDevice();
+  const port = await device.start();
+  try {
+    const client = new ZectrixClient(`127.0.0.1:${port}`, { clientName: '测试NAS' });
+    await client.open_requested(device.connectionId); // 0x1234n
+    assert.equal(client.summary.id, 'aabbccddeeff');
+    assert.equal(client.palette.gray16.length, 16);
+    assert.equal(client.connection, device.connectionId);
+    await client.close();
+
+    // 连接号不匹配应失败（避免连上已易主的设备）
+    const bad = new ZectrixClient(`127.0.0.1:${port}`, { clientName: '测试NAS' });
+    await assert.rejects(() => bad.open_requested(0x9999n), (e) => e.kind === 'Disconnected');
+  } finally {
+    device.stop();
+  }
+});
+
+test('open_requested：管理端名称校验（1~48 字节、无控制字符）', async () => {
+  const device = new MockDevice();
+  const port = await device.start();
+  try {
+    const client = new ZectrixClient(`127.0.0.1:${port}`);
+    await assert.rejects(
+      () => client.open_requested(0x1234n, 'x'.repeat(49)),
+      (e) => e.kind === 'InvalidOptions',
+    );
+  } finally {
+    device.stop();
+  }
+});
+
+test('open_requested：忙碌设备返回 Busy', { timeout: 20000 }, async () => {
+  const device = new MockDevice({ busy: true });
+  const port = await device.start();
+  try {
+    const client = new ZectrixClient(`127.0.0.1:${port}`, { clientName: '测试NAS' });
+    await assert.rejects(() => client.open_requested(0x1234n), (e) => e.kind === 'Busy');
+  } finally {
+    device.stop();
+  }
+});
+
+test('ConnectionRequestListener：过滤非法包、去重、返回合法请求', { timeout: 20000 }, async () => {
+  const listener = new ConnectionRequestListener();
+  await listener.bind();
+  let sock;
+  try {
+    sock = dgram.createSocket('udp4');
+    const send = (buf) =>
+      new Promise((r) => sock.send(buf, 0, buf.length, ConnectionRequestListener.PORT, '127.0.0.1', r));
+    // 先发一个非法包（错误类型），应被忽略
+    await send(encodePacket(T.INFO, 0x1234n, 1));
+    // 再发合法 CONNECT_REQUEST
+    await send(encodePacket(T.CONNECT_REQUEST, 0x1234n, 1));
+    const req = await listener.nextRequest();
+    assert.equal(req.connectionId, 0x1234n);
+    assert.ok(req.address.startsWith('127.0.0.1:'), `地址应为 127.0.0.1:port，实际 ${req.address}`);
+    // 同一条请求（相同地址+连接号）应被去重：紧接着重发一次再发一条新连接号，
+    // 单一消费者的 nextRequest 应跳过重复、只交付新连接号（避免并发抢包导致的竞态）
+    await send(encodePacket(T.CONNECT_REQUEST, 0x1234n, 1));
+    await send(encodePacket(T.CONNECT_REQUEST, 0x5678n, 1));
+    const req2 = await listener.nextRequest();
+    assert.equal(req2.connectionId, 0x5678n, '应跳过重复请求并交付新连接号');
+  } finally {
+    listener.close();
+    if (sock) sock.close();
+  }
+});
+
+test('设备主动连接端到端：监听器收到请求 → 回连 MockDevice', { timeout: 20000 }, async () => {
+  const device = new MockDevice();
+  const port = await device.start();
+  const listener = new ConnectionRequestListener();
+  await listener.bind();
+  try {
+    // 设备用自身套接字向监听端口发 CONNECT_REQUEST（连接号用 MockDevice 的当前值）
+    device.sendConnectRequest(ConnectionRequestListener.PORT);
+    const req = await listener.nextRequest();
+    // req.address 应为设备真实地址:端口，回连后握手成功
+    assert.equal(req.connectionId, device.connectionId);
+    const client = await req.accept('测试NAS');
+    assert.equal(client.summary.id, 'aabbccddeeff');
+    assert.equal(client.connection, device.connectionId);
+    await client.close();
+  } finally {
+    listener.close();
+    device.stop();
+  }
 });

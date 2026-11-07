@@ -9,7 +9,7 @@ import express from 'express';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { ZectrixClient, DEFAULT_PORT } from './client.js';
+import { ZectrixClient, DEFAULT_PORT, ConnectionRequestListener } from './client.js';
 import { FORMAT, formatFor, resolveFormat } from './image.js';
 import { ZectrixError } from './packet.js';
 import { SAMPLE_RATE, CHANNELS } from './audio.js';
@@ -303,6 +303,55 @@ export function createServer(config) {
     if (!previous) return;
     state.switching = previous.close().catch(() => {}).finally(() => { state.switching = null; });
     await state.switching;
+  }
+
+  /**
+   * 设备主动连接监听（SDK 0.2.0 invitation）：监听 UDP 32343，收到设备的 CONNECT_REQUEST 后回连接管管理权。
+   * 最佳努力：端口被占用或出错只告警，不影响现有“管理端主动发现”路径与首页推送。
+   * 默认关闭，需显式 connectionListener: true 才开启（避免并行测试/多实例抢占固定端口 32343）。
+   */
+  let connectionListener = null;
+  async function startConnectionListener() {
+    if (!config.connectionListener) return;
+    connectionListener = new ConnectionRequestListener();
+    try {
+      await connectionListener.bind();
+    } catch (err) {
+      console.log(
+        `设备主动连接监听启动失败（端口 ${ConnectionRequestListener.PORT} 可能被占用），已跳过：` +
+        `${err?.message || err}`,
+      );
+      connectionListener = null;
+      return;
+    }
+    console.log(`设备主动连接监听已启动（UDP ${ConnectionRequestListener.PORT}）`);
+    loopConnectionRequests().catch((err) => console.log(`连接请求监听异常: ${err?.message || err}`));
+  }
+
+  async function loopConnectionRequests() {
+    for (;;) {
+      let req;
+      try { req = await connectionListener.nextRequest(); } catch { break; }
+      if (!req) break;
+      try {
+        const client = await req.accept(config.clientName);
+        // 设备发起的连接接管管理权：先释放旧连接，再登记新连接并消费其事件
+        await releaseClient().catch(() => {});
+        client.on('disconnected', () => { if (state.client === client) state.client = null; });
+        state.client = client;
+        state.device = `${client.host}:${client.port}`;
+        state.deviceSource = 'request';
+        consumeEvents(client);
+        pushEvent({
+          type: 'connected',
+          id: client.summary?.id ?? null,
+          model: client.summary?.model ?? null,
+          via: 'device-request',
+        });
+      } catch (err) {
+        console.log(`设备主动连接建立失败：${err?.message || err}`);
+      }
+    }
   }
 
   /**
@@ -728,6 +777,7 @@ export function createServer(config) {
   /** 供进程退出时调用：先发 CLOSE 释放设备，再结束 SSE 连接 */
   app.locals.shutdown = async () => {
     await releaseClient().catch(() => {});
+    connectionListener?.close();
     if (apps) await apps.stop();
     for (const res of sseClients) {
       try { res.end(); } catch { /* 已关闭 */ }
@@ -762,6 +812,9 @@ export function createServer(config) {
     if (status >= 500) state.lastError = message;
     res.status(status).json({ ok: false, error: message });
   });
+
+  // 设备主动连接监听：最佳努力启动，失败仅告警；已在 app.locals.shutdown 关闭
+  startConnectionListener();
 
   return app;
 }

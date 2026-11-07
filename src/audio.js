@@ -1,7 +1,9 @@
 // 音频编解码：PCM16 16kHz 单声道 ↔ Opus 60ms 帧（960 样本）。
-// 对齐 Rust SDK src/audio.rs：
+// 对齐 Rust SDK src/audio.rs（SDK 0.2.0 / firmware 3.7.5）：
 //   - 播放方向：SDK 将 PCM 切成 960 样本帧，Opus Application=Audio、DTX 关闭，每帧 ≤1180 字节
 //   - 录音方向：设备上行 Opus 帧，按帧序号重排、丢包用 PLC 补偿、末帧按有效采样数裁掉填充
+//   - 扩展音频（0.2.0）：不再有 120 秒 / 2000 帧硬上限，帧计数扩到 u32::MAX；
+//     AUDIO_END 携带 u32 帧数，仅拦下超 u32 计数范围的极端输入（see checkLength）
 // 编码器用 opusscript（libopus 1.4 的 Emscripten/WASM 构建），
 // 纯 WASM 无原生编译，x86 / ARM NAS 均可直接运行；也可替换为 @discordjs/opus 等原生绑定。
 
@@ -12,9 +14,20 @@ export const SAMPLE_RATE = 16000;
 export const CHANNELS = 1;
 export const FRAME_SAMPLES = 960; // 60ms
 export const FRAME_MS = 60;
-export const MAX_SAMPLES = SAMPLE_RATE * 120; // 单段上限 120 秒
+export const U32_MAX = 0xffffffff; // 帧计数器上限：AUDIO_END 携带 u32 帧数，SDK 0.2.0 起不再设时长上限
 export const MAX_PACKET = 1180; // UDP 负载上限 1200 - 16 头 - 4 字节流 ID
-export const MAX_FRAMES = 2000; // 与 Rust Recording 的帧号硬上限一致
+
+/**
+ * 帧数上限校验（对齐 SDK 0.2.0 audio::check_length）。
+ * AUDIO_END 携带的是 u32 帧计数而非字节数，因此只在此处拦下超过 u32 计数范围的
+ * 极端输入——实践中不会触发；不再有 120 秒 / 2000 帧的硬上限。
+ * @param {number} samples PCM 样本数
+ */
+export function checkLength(samples) {
+  if (Math.ceil(samples / FRAME_SAMPLES) > U32_MAX) {
+    throw new ZectrixError('AudioTooLong', '音频帧数超出协议计数范围');
+  }
+}
 
 export class OpusCodec {
   constructor() {
@@ -33,7 +46,7 @@ export class OpusCodec {
       samples = pcm;
     }
     if (samples.length === 0) throw new ZectrixError('InvalidAudio', '没有样本');
-    if (samples.length > MAX_SAMPLES) throw new ZectrixError('AudioTooLong', '音频不能超过 120 秒');
+    checkLength(samples.length);
     const frames = [];
     for (let offset = 0; offset < samples.length; offset += FRAME_SAMPLES) {
       const chunk = samples.subarray(offset, offset + FRAME_SAMPLES);
@@ -86,8 +99,9 @@ export class OpusCodec {
 
 /**
  * 录音重组器：接收设备上行的 Opus 帧流，输出完整 PCM。
- * 逻辑对齐 audio.rs Recording：帧序号 < next+6 才缓存、乱序入 map、按序 drain、
- * 缺帧用 PLC 补偿、结束后按 tail 裁掉最后一帧填充。
+ * 逻辑对齐 audio.rs Recording（SDK 0.2.0）：帧序号 < next+6 才缓存、乱序入 map、按序 drain、
+ * 缺帧用 PLC 补偿、结束后按 tail 裁掉最后一帧填充；帧计数上限为 u32::MAX（不再有 2000 帧硬上限）。
+ * ending() 用 `total - next > 6` 拦截伪造 END（不能在已收尾窗口外凭空合成无限 PLC），与 Rust 一致。
  * drain 的“等不到就跳过”条件与 Rust 一致：force / 缓冲满 6 帧 / 空闲 180ms。
  */
 export class RecordingAssembler {
@@ -99,7 +113,6 @@ export class RecordingAssembler {
     this.pcm = [];
     this.last = new Int16Array(0);
     this.end = null; // { total, tail, reason, at }
-    this.startedAt = Date.now();
     this.progressAt = Date.now(); // 最近一次收到有效帧的时间（看门狗用）
     this.forceLimit = null; // 没有 AUDIO_END 时的硬上限：只补到已收到的最高帧
     this.gaps = 0; // 用静音补偿的缺帧数（可观测性）
@@ -109,8 +122,8 @@ export class RecordingAssembler {
   push(seq, data) {
     if (
       seq < this.next ||
-      seq >= MAX_FRAMES ||
-      seq >= this.next + 6 ||
+      seq === U32_MAX ||
+      seq - this.next >= 6 ||
       this.frames.has(seq) ||
       (this.end && seq >= this.end.total)
     ) {
@@ -127,7 +140,8 @@ export class RecordingAssembler {
 
   ending(total, tail, reason) {
     if (
-      total > MAX_FRAMES ||
+      // 伪造 END 不能凭空合成无限 PLC：只允许在已收尾窗口（6 帧）内收尾
+      (total > this.next && total - this.next > 6) ||
       (total === 0 && tail !== 0) ||
       (total > 0 && (tail < 1 || tail > FRAME_SAMPLES)) ||
       total < this.next
@@ -139,7 +153,7 @@ export class RecordingAssembler {
 
   drain(force) {
     const limit = this.end ? this.end.total : (this.forceLimit ?? Infinity);
-    while (this.next < MAX_FRAMES && this.next < limit) {
+    while (this.next < U32_MAX && this.next < limit) {
       const present = this.frames.has(this.next);
       // 180ms 空闲跳帧只用于“还在传输中”的实时解码；已收到 AUDIO_END（总帧数已知）时
       // 应继续等乱序帧到进展超时，否则会把晚到的帧当成丢包补成静音。

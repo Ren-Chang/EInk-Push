@@ -229,6 +229,15 @@ export class MockDevice {
   observe() {
     return this;
   }
+
+  /** 模拟设备主动发起连接：从设备自身套接字向管理端监听端口发 CONNECT_REQUEST（SDK 0.2.0 invitation） */
+  sendConnectRequest(targetPort = 32343) {
+    this.socket.send(
+      encodePacket(T.CONNECT_REQUEST, this.connectionId, 1),
+      targetPort,
+      '127.0.0.1',
+    );
+  }
 }
 
 const R_INVALID = 2;

@@ -27,6 +27,7 @@ export const T = {
   KEY: 14,
   STATUS: 15,
   PALETTE: 16,
+  CONNECT_REQUEST: 17, // 设备主动发起连接：发到管理端固定端口 32343（SDK 0.2.0 invitation）
 };
 
 /** 响应结果码（协议第 04 节） */
