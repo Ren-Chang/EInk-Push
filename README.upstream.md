@@ -4,7 +4,7 @@ ZECTRIX Note 4 墨水屏 **LAN v1 推送协议的 Node.js 客户端**，以及�
 本项目使用AI协助完成。
 
 > 本文件是上游 EInk-Push 的完整说明（含本 fork 新增的「习惯」应用）。
-> 挑战提交的入口与 Habit 应用介绍见根目录 [`README.md`](./README.md)，
+> 本仓库的入口与 Habit 应用介绍见根目录 [`README.md`](./README.md)，
 > 习惯应用的实现、手势、截图与署名见 [`apps/habit/README.md`](./apps/habit/README.md)。
 
 <p align="center">
