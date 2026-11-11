@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<title>习惯 · EInkPush</title>
+<style>
+  :root {
+    --bg: #f5f5f7;
+    --surface: #ffffff;
+    --text: #1d1d1f;
+    --muted: #6e6e73;
+    --faint: #86868b;
+    --line: #e5e5ea;
+    --accent: #0071e3;
+    --accent-hover: #0077ed;
+    --err: #d70015;
+    --radius-lg: 20px;
+    --radius-md: 14px;
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+    --ease: cubic-bezier(0.25, 0.1, 0.25, 1);
+    --container: 1040px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+      "PingFang SC", "Helvetica Neue", "Microsoft YaHei", Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  button { font: inherit; }
+  :focus-visible { outline: none; box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.3); }
+
+  .shell-nav { position: sticky; top: 0; z-index: 30; background: rgba(255,255,255,0.86);
+    backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 1px solid rgba(0,0,0,0.06); }
+  .shell-inner { max-width: var(--container); margin: 0 auto; padding: 0 24px; height: 56px;
+    display: flex; align-items: center; gap: 12px; }
+  .shell-brand { font-size: 19px; font-weight: 600; letter-spacing: -0.02em; color: var(--text); text-decoration: none; }
+  .shell-brand:hover { text-decoration: none; }
+  .shell-app { padding-left: 12px; border-left: 1px solid var(--line); color: var(--muted); font-size: 14px; white-space: nowrap; }
+  .shell-tabs { margin-left: auto; display: flex; gap: 2px; padding: 3px; border-radius: 999px; background: rgba(0,0,0,0.05); }
+  .shell-tab { padding: 7px 16px; border-radius: 999px; color: var(--muted); font-size: 14px; text-decoration: none;
+    transition: color 0.25s var(--ease), background-color 0.25s var(--ease); }
+  .shell-tab:hover { color: var(--text); text-decoration: none; }
+  .shell-tab[aria-current="page"] { background: #fff; color: var(--text); font-weight: 500; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  @media (max-width: 560px) {
+    .shell-inner { padding: 0 14px; gap: 8px; }
+    .shell-brand { font-size: 17px; }
+    .shell-tab { padding: 6px 12px; font-size: 13px; }
+    .shell-app { display: none; }
+  }
+
+  .page-head { max-width: var(--container); margin: 0 auto; padding: 88px 24px 44px; text-align: center; position: relative; }
+  .back-link { position: absolute; top: 24px; left: 24px; display: inline-flex; align-items: center; gap: 6px;
+    font-size: 14px; color: var(--muted); text-decoration: none; transition: color 0.15s ease; }
+  .back-link:hover { color: var(--text); }
+  .page-head h1 { margin: 0 0 18px; font-size: clamp(40px, 6vw, 64px); line-height: 1.06; font-weight: 600; letter-spacing: -0.03em; }
+  .page-head p { max-width: 620px; margin: 0 auto; color: var(--muted); font-size: 18px; line-height: 1.55; }
+
+  main { max-width: var(--container); margin: 0 auto; padding: 0 24px 72px;
+    display: grid; grid-template-columns: minmax(0, 1.18fr) minmax(0, 0.82fr); gap: 20px; align-items: start; }
+  .stack { display: grid; gap: 20px; }
+  .card { background: var(--surface); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); padding: 28px; }
+  .card-head { margin-bottom: 18px; }
+  .card-head h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.02em; }
+  .card-head p { margin: 6px 0 0; color: var(--muted); font-size: 14px; }
+
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 0; border-top: 1px solid var(--line); }
+  .row:first-child { border-top: 0; }
+  .meta { flex: 1 1 200px; min-width: 0; }
+  .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stats { color: var(--muted); font-size: 12px; line-height: 1.6; }
+  .star { width: 34px; height: 34px; padding: 0; border-radius: 999px; color: #b58b00; font-size: 18px; }
+  .star.on { background: #fff7d6; border-color: #e6c45a; }
+  .quad-toggle { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; color: var(--muted); font-size: 13px; }
+  .quad-toggle input { width: auto; }
+
+  button { border: 1px solid var(--line); background: #fff; color: var(--text); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+  button:hover { border-color: #bbb; }
+  button.primary { background: var(--text); color: #fff; border-color: var(--text); }
+  button.danger { color: #a3382a; }
+  input, select { font: inherit; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--text); }
+  input[type=number] { width: 84px; }
+  .field { margin-top: 12px; }
+  .field label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
+  .home-mode { display: flex; gap: 18px; flex-wrap: wrap; padding: 10px 0; }
+  .home-mode label { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); cursor: pointer; }
+  .home-mode input { width: auto; }
+  .quad-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+  .quad-grid label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
+  .hidden { display: none !important; }
+  .actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  .hint { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+  .preview img { display: block; width: 100%; height: auto; border-radius: 10px; background: #fff; border: 1px solid var(--line); }
+  .preview .actions { margin-top: 14px; }
+
+  .add { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .add input[type=text] { flex: 1 1 180px; }
+  .empty { color: var(--muted); padding: 18px 0; }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #1d1d1f; color: #fff;
+    padding: 9px 16px; border-radius: 999px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 50; }
+  .toast.show { opacity: .94; }
+
+  @media (max-width: 880px) { main { grid-template-columns: 1fr; } }
+  @media (max-width: 720px) {
+    .page-head { padding: 64px 20px 36px; }
+    main { padding: 0 20px 56px; }
+    .card { padding: 22px; }
+  }
+</style>
+</head>
+<body>
+<nav class="shell-nav">
+  <div class="shell-inner">
+    <a class="shell-brand" href="/">EInkPush</a>
+    <span class="shell-app">习惯</span>
+    <div class="shell-tabs">
+      <a class="shell-tab" href="/">首页</a>
+      <a class="shell-tab" href="/device">设备</a>
+      <a class="shell-tab" href="/apps" aria-current="page">应用</a>
+    </div>
+  </div>
+</nav>
+
+<header class="page-head">
+  <a class="back-link" href="/apps">← 应用列表</a>
+  <h1>习惯</h1>
+  <p>单卡和四宫格都用确认键直接打卡；长按上进详情、长按下换卡片。详情页确认回单卡、长按上回四宫格。</p>
+</header>
+
+<main>
+  <div class="stack">
+    <section class="card">
+      <div class="card-head">
+        <h2>首页显示</h2>
+        <p>单卡不需要收藏；四宫格只挑 1～4 张收藏卡。设备详情页也能切换：确认回单卡，长按上回四宫格。</p>
+      </div>
+      <div class="home-mode">
+        <label><input type="radio" name="homeMode" value="single"> 单卡</label>
+        <label><input type="radio" name="homeMode" value="quadrant"> 四宫格</label>
+      </div>
+      <p class="hint" id="singleHint">单卡模式：确认键直接打卡，长按上进详情，长按下翻下一个习惯（全部习惯循环）。</p>
+      <div class="quad-grid hidden" id="quadRow">
+        <label>左上<select class="quadSel" data-index="0"></select></label>
+        <label>右上<select class="quadSel" data-index="1"></select></label>
+        <label>左下<select class="quadSel" data-index="2"></select></label>
+        <label>右下<select class="quadSel" data-index="3"></select></label>
+      </div>
+      <div class="actions">
+        <button class="primary" id="saveHome">保存首页</button>
+        <span class="hint" id="homeHint"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>习惯列表</h2>
+        <p>勾选最多四个放进四宫格（只有这四张卡算收藏）。频率支持每周、每月、每季度，目标次数可以是任意正整数。</p>
+      </div>
+      <div id="list"></div>
+      <div class="add">
+        <input id="name" type="text" maxlength="40" placeholder="新习惯，例如：读书 20 分钟">
+        <select id="period">
+          <option value="week">每周</option>
+          <option value="month">每月</option>
+          <option value="quarter">每季度</option>
+        </select>
+        <input id="target" type="number" min="1" max="10000" value="7" title="每个周期的目标次数">
+        <button class="primary" id="add">添加</button>
+      </div>
+    </section>
+  </div>
+
+  <section class="card preview">
+    <div class="card-head">
+      <h2>设备首页</h2>
+      <p>400 × 300 · 单色墨水屏预览</p>
+    </div>
+    <img id="preview" alt="设备首页预览">
+    <div class="actions">
+      <button id="push">推到设备</button>
+      <span class="hint" id="hint"></span>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let state = null;
+
+function toast(message) {
+  const el = $('toast');
+  el.textContent = message;
+  el.classList.add('show');
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => el.classList.remove('show'), 1800);
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const data = await response.json().catch(() => ({ ok: false, error: '响应不是 JSON' }));
+  if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+function pct(value) { return `${Math.round(value * 100)}%`; }
+
+function freqLabel(habit) {
+  if (habit.period === 'month') return `每月 ${habit.target} 次`;
+  if (habit.period === 'quarter') return `每季度 ${habit.target} 次`;
+  return habit.target >= 7 ? '每天' : `每周 ${habit.target} 次`;
+}
+
+function unitOf(habit) {
+  if (habit.period === 'month') return '月';
+  if (habit.period === 'quarter') return '季';
+  return habit.target >= 7 ? '天' : '周';
+}
+
+function periodOptions(selected) {
+  return [
+    ['week', '每周'],
+    ['month', '每月'],
+    ['quarter', '每季度'],
+  ].map(([value, label]) => `<option value="${value}"${value === selected ? ' selected' : ''}>${label}</option>`).join('');
+}
+
+function habitOptions(selected) {
+  return '<option value="">— 未选择 —</option>' + state.habits.map((habit) => (
+    `<option value="${habit.id}"${habit.id === selected ? ' selected' : ''}>${escapeHtml(habit.name)}</option>`
+  )).join('');
+}
+
+function renderHomeSettings() {
+  document.querySelectorAll('input[name="homeMode"]').forEach((input) => {
+    input.checked = input.value === state.homeMode;
+  });
+  document.querySelectorAll('.quadSel').forEach((select) => {
+    select.innerHTML = habitOptions(state.quadrantIds[Number(select.dataset.index)] ?? '');
+  });
+  const quadrant = state.homeMode === 'quadrant';
+  $('singleHint').classList.toggle('hidden', quadrant);
+  $('quadRow').classList.toggle('hidden', !quadrant);
+  $('homeHint').textContent = quadrant
+    ? `当前四宫格 ${state.homeIds.length} 张卡`
+    : `当前单卡：${state.homeIds.length ? '长按上进详情、长按下翻习惯' : '还没有习惯'}`;
+}
+
+function renderList() {
+  const list = $('list');
+  if (!state.habits.length) {
+    list.innerHTML = '<div class="empty">还没有习惯。先在下面加一个，比如「23:30 前睡觉」。</div>';
+    return;
+  }
+  list.innerHTML = state.habits.map((habit) => {
+    const stats = habit.stats;
+    const inQuadrant = state.quadrantIds.includes(habit.id);
+    return `
+      <div class="row" data-id="${habit.id}">
+        <div class="meta">
+          <div class="name">${escapeHtml(habit.name)}</div>
+          <div class="stats">累计 ${stats.count} 次 · 最近 ${escapeHtml(stats.lastLabel)} · 得分 ${pct(stats.score)} · 连续 ${stats.streak} ${unitOf(habit)} · 频率 ${freqLabel(habit)}</div>
+        </div>
+        <label class="quad-toggle"><input type="checkbox" data-act="quad"${inQuadrant ? ' checked' : ''}> 四宫格</label>
+        <select class="period" title="周期">${periodOptions(habit.period)}</select>
+        <input class="target" type="number" min="1" max="10000" value="${habit.target}" title="每个周期的目标次数">
+        <button data-act="savefreq">保存频率</button>
+        <button data-act="rename">改名</button>
+        <button data-act="delete" class="danger">删除</button>
+      </div>`;
+  }).join('');
+}
+
+function renderPreview(bust) {
+  $('preview').src = `api/preview.png?view=home&t=${bust ?? Date.now()}`;
+  $('hint').textContent = `今日完成 ${state.doneToday}/${state.habits.length}`
+    + (state.active ? ' · 设备按键已接管' : ' · 设备上切到本应用即可操作');
+}
+
+async function refresh(bust) {
+  state = await api('api/state');
+  renderHomeSettings();
+  renderList();
+  renderPreview(bust);
+}
+
+function collectHome() {
+  const mode = document.querySelector('input[name="homeMode"]:checked')?.value ?? 'single';
+  const quadrantIds = [...document.querySelectorAll('.quadSel')]
+    .map((select) => select.value)
+    .filter(Boolean);
+  return { mode, quadrantIds };
+}
+
+async function saveHome(body) {
+  await api('api/home', { method: 'PUT', body });
+  await refresh();
+}
+
+async function main() {
+  await refresh();
+  // 页面打开期间接管确认键，关闭或切走时交还（与「今天吃什么」一致）
+  api('api/arm', { method: 'POST', body: { active: true } }).catch(() => {});
+
+  document.querySelectorAll('input[name="homeMode"]').forEach((input) => {
+    input.addEventListener('change', () => {
+      const quadrant = input.value === 'quadrant' && input.checked;
+      $('singleHint').classList.toggle('hidden', quadrant);
+      $('quadRow').classList.toggle('hidden', !quadrant);
+    });
+  });
+
+  $('saveHome').addEventListener('click', async () => {
+    try {
+      await saveHome(collectHome());
+      toast('首页已保存');
+    } catch (err) { toast(err.message); }
+  });
+
+  $('add').addEventListener('click', async () => {
+    const name = $('name').value.trim();
+    if (!name) return toast('先写个名字');
+    try {
+      await api('api/habits', {
+        method: 'POST',
+        body: { name, period: $('period').value, target: Number($('target').value) },
+      });
+      $('name').value = '';
+      await refresh();
+      toast('已添加');
+    } catch (err) { toast(err.message); }
+  });
+
+  $('name').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') $('add').click();
+  });
+
+  $('list').addEventListener('change', async (event) => {
+    const toggle = event.target.closest('[data-act="quad"]');
+    if (!toggle) return;
+    const row = event.target.closest('.row');
+    const id = row.dataset.id;
+    let quadrantIds = [...state.quadrantIds];
+    if (toggle.checked) {
+      if (!quadrantIds.includes(id) && quadrantIds.length >= 4) {
+        toggle.checked = false;
+        toast('四宫格最多 4 个');
+        return;
+      }
+      quadrantIds = [...new Set([...quadrantIds, id])];
+    } else {
+      quadrantIds = quadrantIds.filter((item) => item !== id);
+    }
+    try {
+      await saveHome({ mode: state.homeMode, quadrantIds });
+    } catch (err) { toast(err.message); }
+  });
+
+  $('list').addEventListener('click', async (event) => {
+    const row = event.target.closest('.row');
+    if (!row) return;
+    const id = row.dataset.id;
+    const habit = state.habits.find((item) => item.id === id);
+    const act = event.target.dataset.act;
+    try {
+      if (act === 'savefreq') {
+        const period = row.querySelector('.period').value;
+        const target = Number(row.querySelector('.target').value);
+        if (!Number.isInteger(target) || target < 1) return toast('目标次数要是正整数');
+        await api(`api/habits/${id}`, { method: 'PUT', body: { period, target } });
+        await refresh();
+        toast('频率已保存');
+      }
+      if (act === 'delete') {
+        if (!confirm(`删除「${habit.name}」？打卡记录会一起删除。`)) return;
+        await api(`api/habits/${id}`, { method: 'DELETE' });
+        await refresh();
+        toast('已删除');
+      }
+      if (act === 'rename') {
+        const name = prompt('新的名字', habit.name);
+        if (!name || name.trim() === habit.name) return;
+        await api(`api/habits/${id}`, { method: 'PUT', body: { name: name.trim() } });
+        await refresh();
+        toast('已改名');
+      }
+    } catch (err) { toast(err.message); }
+  });
+
+  $('push').addEventListener('click', async () => {
+    try {
+      const result = await api('api/push', { method: 'POST' });
+      toast(`已推送 · ${result.lastPush?.ms ?? '?'} ms`);
+      await refresh();
+    } catch (err) { toast(err.message); }
+  });
+
+  const release = () => fetch('api/arm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ active: false }),
+    keepalive: true,
+  }).catch(() => {});
+  window.addEventListener('pagehide', release);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') release();
+  });
+}
+
+main().catch((err) => toast(err.message));
+</script>
+</body>
+</html>

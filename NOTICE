@@ -1,0 +1,11 @@
+Zectrix Habit
+
+This product includes software from EInk-Push 0.4.4
+(https://github.com/moyubyte/EInk-Push), licensed under the Apache License,
+Version 2.0.
+
+The habit app (`apps/habit/`), the habit-only launcher/filter, the challenge
+screenshots, and the challenge documentation are additions for this submission.
+All upstream files retain their original copyright and license notices.
+
+See LICENSE for the full Apache-2.0 license text.
